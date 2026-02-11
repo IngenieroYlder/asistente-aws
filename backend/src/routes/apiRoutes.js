@@ -15,7 +15,7 @@ const storage = multer.diskStorage({
 });
 const upload = multer({ 
     storage,
-    limits: { fileSize: 10 * 1024 * 1024 } // 10MB max per file
+    limits: { fileSize: 25 * 1024 * 1024 } // 25MB raw (mediaService will optimize/compress)
 });
 
 // Secure all API routes

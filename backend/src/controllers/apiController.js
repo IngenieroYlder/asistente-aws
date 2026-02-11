@@ -132,7 +132,7 @@ exports.uploadAsset = async (req, res) => {
         // Handle pdf-parse export variation (function vs object)
         const pdf = typeof pdfLib === 'function' ? pdfLib : (pdfLib.default || pdfLib.PDFParse || pdfLib);
 
-        const sharp = require('sharp');
+        const { optimizeImage } = require('../services/mediaService');
 
         for (const file of req.files) {
             let extractedText = null;
@@ -151,29 +151,26 @@ exports.uploadAsset = async (req, res) => {
                 continue;
             }
 
-            // Image Optimization
+            // Image Optimization via mediaService (WebP conversion, smart resize)
             if (file.mimetype.startsWith('image/')) {
                 try {
-                    const tempPath = fullPath + '_tmp';
-                    await sharp(fullPath)
-                        .resize({ width: 1200, withoutEnlargement: true })
-                        .jpeg({ quality: 80 })
-                        .toFile(tempPath);
-                    
-                    fs.unlinkSync(fullPath);
-                    fs.renameSync(tempPath, fullPath);
-                    console.log(`[Optimization] Compressed ${file.filename}`);
+                    const result = await optimizeImage(fullPath, { maxWidth: 1600, quality: 82 });
+                    // Update file references if filename changed (e.g., .jpg -> .webp)
+                    file.filename = result.filename;
+                    console.log(`[Upload] Optimized ${result.filename}: ${result.savings} saved`);
                 } catch (err) {
-                    console.error(`[Optimization Error] Failed to compress ${file.filename}:`, err.message);
+                    console.error(`[Upload Optimization Error] ${file.filename}:`, err.message);
                 }
             }
 
             try {
                 if (file.mimetype === 'text/plain') {
-                    extractedText = fs.readFileSync(fullPath, 'utf8');
+                    const readPath = path.join(__dirname, '../../', `uploads/${file.filename}`);
+                    extractedText = fs.readFileSync(readPath, 'utf8');
                     console.log(`[Extraction] TXT extracted ${extractedText.length} chars from ${file.filename}`);
                 } else if (file.mimetype === 'application/pdf') {
-                    const dataBuffer = fs.readFileSync(fullPath);
+                    const readPath = path.join(__dirname, '../../', `uploads/${file.filename}`);
+                    const dataBuffer = fs.readFileSync(readPath);
                     console.log(`[Extraction] Processing PDF ${file.filename} (${dataBuffer.length} bytes)`);
                     const data = await pdf(dataBuffer);
                     if (data.text && data.text.trim().length > 0) {

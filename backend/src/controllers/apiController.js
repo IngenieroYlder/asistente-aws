@@ -253,6 +253,17 @@ exports.updateSetting = async (req, res) => {
     console.log(`[Settings] Updating ${key} for Company: ${companyId}`);
 
     try {
+        // Validate that the company exists before saving (prevents FK violation)
+        if (companyId) {
+            const companyExists = await db.Company.findByPk(companyId);
+            if (!companyExists) {
+                console.error(`[Settings] ERROR: company_id ${companyId} does not exist in DB!`);
+                return res.status(400).json({ 
+                    error: `La empresa con ID ${companyId} no existe. Por favor cierre sesión y vuelva a ingresar.` 
+                });
+            }
+        }
+
         let setting = await db.Setting.findOne({ where: { company_id: companyId, key } });
         
         if (setting) {
@@ -266,10 +277,7 @@ exports.updateSetting = async (req, res) => {
         
         // If critical keys changed (like Telegram Token), we might need to restart the bot
         if (key === 'TELEGRAM_BOT_TOKEN') {
-             // We can emit an event or call botManager directly if available globally
-             // We can emit an event or call botManager directly if available globally
-             // For now, let's assume specific restart endpoint or auto-reload
-             const boManager = require('../services/botManager'); // careful with circular deps, better to have a singleton
+             const boManager = require('../services/botManager');
              if (companyId) {
                  await boManager.startCompanyBot(companyId);
              } else {
@@ -280,9 +288,10 @@ exports.updateSetting = async (req, res) => {
         res.json({ success: true });
     } catch (e) { 
         console.error('[Settings] Error saving:', e);
-        res.status(500).json({ error: e.message, stack: e.stack }); 
+        res.status(500).json({ error: e.message }); 
     }
 };
+
 
 // --- Backups & Data Management ---
 

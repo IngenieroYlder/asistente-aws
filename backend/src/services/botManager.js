@@ -291,7 +291,7 @@ const sendMessageExternal = async (companyId, platform, platformId, text, media 
                     await bot.telegram.sendMessage(platformId, '[Opciones]', extra);
                 }
                 
-                // 2. Send Media
+                // 3. Send Media
                 if (media && media.length > 0) {
                     for (const m of media) {
                         const localPath = path.join(__dirname, '../../', m.url);
@@ -307,8 +307,20 @@ const sendMessageExternal = async (companyId, platform, platformId, text, media 
                 return true;
             }
         }
-        // TODO: Implement for other platforms as they are connected
-        console.warn(`[BotManager] Platform ${platform} not yet supported for manual messages.`);
+        
+        // WhatsApp via Baileys (testing mode)
+        if (platform === 'whatsapp') {
+            const baileysService = require('./baileysService');
+            if (baileysService.isConnected(companyId)) {
+                await baileysService.sendMessage(companyId, platformId, text, media);
+                console.log(`[BotManager] Manual message sent via Baileys to ${platformId}`);
+                return true;
+            }
+            // If Baileys is not connected, fall through to Meta API or warn
+        }
+
+        // TODO: Implement for Meta (Messenger/Instagram/WhatsApp Cloud) manual message sending
+        console.warn(`[BotManager] Platform ${platform} not yet supported for manual messages or not connected.`);
         return false;
     } catch (e) {
         console.error(`[BotManager] Error sending manual message:`, e.message);

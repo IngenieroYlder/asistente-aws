@@ -4,24 +4,29 @@
  * Uses @whiskeysockets/baileys to connect via QR code scanning.
  * This is NOT the official Meta WhatsApp API - for testing only.
  * 
- * Architecture:
- *   Map<companyId, { sock, status, qr }> for multi-tenant support
- *   QR codes are emitted via Socket.IO in real-time
- *   Messages are routed through botLogic.processMessage()
- *   The messageBuffer debounce applies automatically
+ * Features:
+ *   - Multi-tenant connections (Map<companyId, { sock, status, qr }>)
+ *   - QR codes emitted via Socket.IO in real-time
+ *   - Audio download + Whisper transcription
+ *   - Image download + optimization
+ *   - Typing indicator while processing
+ *   - Messages routed through botLogic.processMessage()
+ *   - Full messageBuffer debounce integration
  */
 
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion } = require('@whiskeysockets/baileys');
+const { default: makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage } = require('@whiskeysockets/baileys');
 const pino = require('pino');
 const path = require('path');
 const fs = require('fs');
 const QRCode = require('qrcode');
 const botLogic = require('./botLogic');
+const openaiService = require('./openaiService');
 const { bufferMessage } = require('./messageBuffer');
 
 // Map<companyKey, { sock, status, qr, retries }>
 const connections = new Map();
 const AUTH_DIR = path.join(__dirname, '../../uploads/baileys_auth');
+const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
 // Socket.IO instance (set from app.js)
 let io = null;
@@ -38,6 +43,51 @@ function setIO(socketIO) {
  */
 function getKey(companyId) {
     return companyId ? `company_${companyId}` : 'global';
+}
+
+/**
+ * Show "typing..." indicator in WhatsApp
+ */
+async function sendTyping(sock, jid) {
+    try {
+        await sock.presenceSubscribe(jid);
+        await sock.sendPresenceUpdate('composing', jid);
+    } catch (e) { /* ignore typing errors */ }
+}
+
+/**
+ * Stop "typing..." indicator
+ */
+async function stopTyping(sock, jid) {
+    try {
+        await sock.sendPresenceUpdate('paused', jid);
+    } catch (e) { /* ignore */ }
+}
+
+/**
+ * Download media from a Baileys message and save to uploads/
+ */
+async function downloadBaileysMedia(msg, type, companyId, senderId) {
+    try {
+        const buffer = await downloadMediaMessage(msg, 'buffer', {});
+        if (!buffer || buffer.length === 0) return null;
+
+        // Limit: 25MB
+        if (buffer.length > 25 * 1024 * 1024) {
+            console.warn(`[Baileys] Media too large: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
+            return null;
+        }
+
+        const ext = type === 'audio' ? '.ogg' : '.jpg';
+        const filename = `baileys_${companyId || 'global'}_${senderId.replace('@s.whatsapp.net', '')}_${Date.now()}${ext}`;
+        const filePath = path.join(UPLOADS_DIR, filename);
+        fs.writeFileSync(filePath, buffer);
+        console.log(`[Baileys] Downloaded ${type}: ${filename} (${(buffer.length / 1024).toFixed(0)}KB)`);
+        return filePath;
+    } catch (e) {
+        console.error('[Baileys] Media download error:', e.message);
+        return null;
+    }
 }
 
 /**
@@ -85,7 +135,6 @@ async function startBaileys(companyId) {
         const { connection, lastDisconnect, qr } = update;
 
         if (qr) {
-            // Generate QR as base64 data URL
             try {
                 const qrDataUrl = await QRCode.toDataURL(qr, { width: 300, margin: 2 });
                 conn.qr = qrDataUrl;
@@ -113,7 +162,6 @@ async function startBaileys(companyId) {
                 console.log(`[Baileys] Reconnecting ${key} in ${delay / 1000}s (attempt ${conn.retries})...`);
                 setTimeout(() => startBaileys(companyId), delay);
             } else if (statusCode === DisconnectReason.loggedOut) {
-                // Clear auth state on logout
                 console.log(`[Baileys] Logged out for ${key}. Clearing auth.`);
                 if (fs.existsSync(authPath)) {
                     fs.rmSync(authPath, { recursive: true, force: true });
@@ -128,7 +176,6 @@ async function startBaileys(companyId) {
             conn.qr = null;
             conn.retries = 0;
 
-            // Get connected phone info
             const phoneNumber = sock.user?.id?.replace(/:.*$/, '') || 'Unknown';
             const pushName = sock.user?.name || '';
 
@@ -146,7 +193,6 @@ async function startBaileys(companyId) {
         if (type !== 'notify') return;
 
         for (const msg of messages) {
-            // Skip messages from self, status broadcasts, and protocol messages
             if (msg.key.fromMe) continue;
             if (msg.key.remoteJid === 'status@broadcast') continue;
             if (!msg.message) continue;
@@ -154,7 +200,6 @@ async function startBaileys(companyId) {
             const senderId = msg.key.remoteJid;
             const pushName = msg.pushName || 'Usuario';
 
-            // Extract text from various message types
             let text = '';
             let msgType = 'text';
             let mediaUrl = null;
@@ -164,14 +209,47 @@ async function startBaileys(companyId) {
             } else if (msg.message.extendedTextMessage) {
                 text = msg.message.extendedTextMessage.text || '';
             } else if (msg.message.imageMessage) {
-                text = msg.message.imageMessage.caption || '[Imagen]';
-                msgType = 'image';
-                // TODO: Download image if needed
+                // Download image
+                const localPath = await downloadBaileysMedia(msg, 'image', companyId, senderId);
+                if (localPath) {
+                    text = msg.message.imageMessage.caption || '';
+                    msgType = 'image';
+                    mediaUrl = localPath;
+                } else {
+                    text = msg.message.imageMessage.caption || '[Imagen no descargada]';
+                }
             } else if (msg.message.audioMessage) {
-                // Voice notes - skip buffer, process directly
                 msgType = 'audio';
-                text = '[Audio]';
-                // TODO: Download and transcribe audio
+                // Download audio and transcribe
+                const localPath = await downloadBaileysMedia(msg, 'audio', companyId, senderId);
+                if (localPath) {
+                    // Show typing while transcribing
+                    await sendTyping(sock, senderId);
+
+                    try {
+                        const transcription = await openaiService.transcribeAudio(localPath, companyId);
+                        fs.unlinkSync(localPath); // Clean up temp file
+
+                        if (transcription) {
+                            text = transcription;
+                            console.log(`[Baileys] Transcribed audio: "${text.substring(0, 60)}..."`);
+                        } else {
+                            text = '';
+                            await sock.sendMessage(senderId, { text: '👂 No pude entender el audio.' });
+                            await stopTyping(sock, senderId);
+                            continue;
+                        }
+                    } catch (e) {
+                        console.error('[Baileys] Transcription error:', e.message);
+                        try { fs.unlinkSync(localPath); } catch(ue) {}
+                        await sock.sendMessage(senderId, { text: '❌ Error procesando tu audio.' });
+                        await stopTyping(sock, senderId);
+                        continue;
+                    }
+                } else {
+                    await sock.sendMessage(senderId, { text: '🙉 No pude descargar el audio.' });
+                    continue;
+                }
             } else if (msg.message.documentMessage) {
                 text = `[Documento: ${msg.message.documentMessage.fileName || 'archivo'}]`;
             } else if (msg.message.videoMessage) {
@@ -179,7 +257,7 @@ async function startBaileys(companyId) {
             } else if (msg.message.stickerMessage) {
                 text = '[Sticker]';
             } else {
-                continue; // Skip unsupported message types
+                continue;
             }
 
             const profile = {
@@ -192,33 +270,25 @@ async function startBaileys(companyId) {
 
             console.log(`[Baileys] Message from ${senderId}: "${text.substring(0, 50)}"`);
 
-            // Use buffer for text messages, direct for audio
+            // Audio goes direct (already transcribed), text/image go through buffer
             if (msgType === 'audio') {
-                // Audio goes direct (transcription adds delay)
+                await sendTyping(sock, senderId);
                 const response = await botLogic.processMessage(companyId, 'whatsapp', senderId, profile, text, msgType, mediaUrl);
+                await stopTyping(sock, senderId);
                 if (response && response.text) {
                     await sock.sendMessage(senderId, { text: response.text });
                 }
+                await sendBotPhotos(sock, senderId, response);
             } else {
-                // Text/image go through debounce buffer
                 await bufferMessage(companyId, 'whatsapp', senderId, text, msgType, mediaUrl, profile,
                     async (cId, platform, platformId, prof, combinedText, type, mUrl) => {
+                        await sendTyping(sock, platformId);
                         const response = await botLogic.processMessage(cId, platform, platformId, prof, combinedText, type, mUrl);
+                        await stopTyping(sock, platformId);
                         if (response && response.text) {
                             await sock.sendMessage(platformId, { text: response.text });
                         }
-                        // Send photos if any
-                        if (response && response.photos && response.photos.length > 0) {
-                            for (const p of response.photos) {
-                                const localPath = path.join(__dirname, '../../', p.url);
-                                if (fs.existsSync(localPath)) {
-                                    await sock.sendMessage(platformId, { 
-                                        image: fs.readFileSync(localPath),
-                                        caption: p.caption || ''
-                                    });
-                                }
-                            }
-                        }
+                        await sendBotPhotos(sock, platformId, response);
                     }
                 );
             }
@@ -226,6 +296,23 @@ async function startBaileys(companyId) {
     });
 
     return { status: 'connecting' };
+}
+
+/**
+ * Send bot response photos if any
+ */
+async function sendBotPhotos(sock, jid, response) {
+    if (response && response.photos && response.photos.length > 0) {
+        for (const p of response.photos) {
+            const localPath = path.join(__dirname, '../../', p.url);
+            if (fs.existsSync(localPath)) {
+                await sock.sendMessage(jid, { 
+                    image: fs.readFileSync(localPath),
+                    caption: p.caption || ''
+                });
+            }
+        }
+    }
 }
 
 /**
@@ -237,15 +324,12 @@ async function stopBaileys(companyId) {
     if (conn && conn.sock) {
         try {
             await conn.sock.logout();
-        } catch (e) {
-            // Ignore logout errors
-        }
+        } catch (e) {}
         try {
             conn.sock.end();
         } catch (e) {}
         connections.delete(key);
         
-        // Clear auth state
         const authPath = path.join(AUTH_DIR, key);
         if (fs.existsSync(authPath)) {
             fs.rmSync(authPath, { recursive: true, force: true });
@@ -274,6 +358,15 @@ function getStatus(companyId) {
 }
 
 /**
+ * Check if Baileys has an active connection for a company
+ */
+function isConnected(companyId) {
+    const key = getKey(companyId);
+    const conn = connections.get(key);
+    return conn && conn.status === 'connected';
+}
+
+/**
  * Send a message via Baileys (for manual messages from admin panel)
  */
 async function sendMessage(companyId, to, text, media = []) {
@@ -283,7 +376,6 @@ async function sendMessage(companyId, to, text, media = []) {
         throw new Error('WhatsApp (Baileys) is not connected');
     }
 
-    // Ensure JID format
     const jid = to.includes('@') ? to : `${to}@s.whatsapp.net`;
 
     if (text) {
@@ -316,5 +408,6 @@ module.exports = {
     startBaileys,
     stopBaileys,
     getStatus,
+    isConnected,
     sendMessage
 };

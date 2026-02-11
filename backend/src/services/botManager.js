@@ -1,6 +1,7 @@
 const { Telegraf, Markup } = require('telegraf');
 const { Company, Setting } = require('../database/models');
 const botLogic = require('./botLogic');
+const { bufferMessage } = require('./messageBuffer');
 const path = require('path');
 const fs = require('fs');
 const axios = require('axios');
@@ -114,16 +115,24 @@ const startCompanyBot = async (companyId) => {
         // --- Telegram Event Handlers ---
         bot.on('text', async (ctx) => {
             const profile = await getProfileData(ctx);
-            const response = await botLogic.processMessage(companyId, 'telegram', ctx.from.id, profile, ctx.message.text, 'text');
-            await sendTelegramResponse(ctx, response);
+            await bufferMessage(companyId, 'telegram', ctx.from.id, ctx.message.text, 'text', null, profile,
+                async (cId, platform, platformId, prof, combinedText, type, mediaUrl) => {
+                    const response = await botLogic.processMessage(cId, platform, platformId, prof, combinedText, type, mediaUrl);
+                    await sendTelegramResponse(ctx, response);
+                }
+            );
         });
 
         bot.on('photo', async (ctx) => {
             const profile = await getProfileData(ctx);
             const photo = ctx.message.photo[ctx.message.photo.length - 1];
             const link = await ctx.telegram.getFileLink(photo.file_id);
-            const response = await botLogic.processMessage(companyId, 'telegram', ctx.from.id, profile, ctx.message.caption || '', 'image', link.href);
-            await sendTelegramResponse(ctx, response);
+            await bufferMessage(companyId, 'telegram', ctx.from.id, ctx.message.caption || '', 'image', link.href, profile,
+                async (cId, platform, platformId, prof, combinedText, type, mediaUrl) => {
+                    const response = await botLogic.processMessage(cId, platform, platformId, prof, combinedText, type, mediaUrl);
+                    await sendTelegramResponse(ctx, response);
+                }
+            );
         });
 
         bot.on('voice', async (ctx) => {
@@ -199,8 +208,12 @@ const startGlobalBot = async () => {
                 avatar_url: avatar_url,
                 bio: bio
             };
-            const response = await botLogic.processMessage(null, 'telegram', userId, profile, text, 'text');
-            await sendTelegramResponse(ctx, response);
+            await bufferMessage(null, 'telegram', userId, text, 'text', null, profile,
+                async (cId, platform, platformId, prof, combinedText, type, mediaUrl) => {
+                    const response = await botLogic.processMessage(cId, platform, platformId, prof, combinedText, type, mediaUrl);
+                    await sendTelegramResponse(ctx, response);
+                }
+            );
         });
 
         bot.on('photo', async (ctx) => {
@@ -209,7 +222,12 @@ const startGlobalBot = async () => {
                 const photo = ctx.message.photo[ctx.message.photo.length - 1];
                 const fileLink = await ctx.telegram.getFileLink(photo.file_id);
                 const profile = { first_name: ctx.from.first_name, username: ctx.from.username };
-                await botLogic.processMessage(null, 'telegram', userId, profile, `[IMAGE]`, 'image', fileLink.href);
+                await bufferMessage(null, 'telegram', userId, ctx.message.caption || '[IMAGE]', 'image', fileLink.href, profile,
+                    async (cId, platform, platformId, prof, combinedText, type, mediaUrl) => {
+                        const response = await botLogic.processMessage(cId, platform, platformId, prof, combinedText, type, mediaUrl);
+                        await sendTelegramResponse(ctx, response);
+                    }
+                );
             } catch (error) { console.error("Photo Error", error); }
         });
 

@@ -1,4 +1,5 @@
 const botLogic = require('./botLogic');
+const { bufferMessage } = require('./messageBuffer');
 const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
@@ -73,10 +74,14 @@ const processMetaEvent = async (companyId, event, platformType) => {
     let profile = { first_name: 'Usuario', username: '', avatar_url: '' };
 
     if (message.text) {
-        const response = await botLogic.processMessage(companyId, platform, senderId, profile, message.text, 'text');
-        if (response.text) {
-            await sendMetaMessage(companyId, senderId, response.text, platform);
-        }
+        await bufferMessage(companyId, platform, senderId, message.text, 'text', null, profile,
+            async (cId, plat, platId, prof, combinedText, type, mediaUrl) => {
+                const response = await botLogic.processMessage(cId, plat, platId, prof, combinedText, type, mediaUrl);
+                if (response.text) {
+                    await sendMetaMessage(cId, platId, response.text, plat);
+                }
+            }
+        );
     } else if (message.attachments && message.attachments.length > 0) {
         // Handle Attachments (Audio/Voice)
         const attachment = message.attachments[0];

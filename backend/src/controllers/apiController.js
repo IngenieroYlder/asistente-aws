@@ -282,6 +282,12 @@ exports.updateSetting = async (req, res) => {
              }
         }
 
+        // Invalidate debounce delay cache when buffer setting changes
+        if (key === 'MESSAGE_BUFFER_SECONDS') {
+            const { invalidateCache } = require('../services/messageBuffer');
+            invalidateCache(companyId);
+        }
+
         res.json({ success: true });
     } catch (e) { 
         console.error('[Settings] Error saving:', e);

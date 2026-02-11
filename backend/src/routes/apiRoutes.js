@@ -13,7 +13,10 @@ const storage = multer.diskStorage({
     destination: (req, file, cb) => cb(null, 'uploads/'),
     filename: (req, file, cb) => cb(null, Date.now() + path.extname(file.originalname))
 });
-const upload = multer({ storage });
+const upload = multer({ 
+    storage,
+    limits: { fileSize: 10 * 1024 * 1024 } // 10MB max per file
+});
 
 // Secure all API routes
 router.use(verifyToken);
@@ -65,7 +68,6 @@ router.put('/companies/:id', verifyAdmin, companyController.updateCompany);
 router.put('/companies/:id/status', verifyAdmin, companyController.toggleStatus);
 router.post('/companies/:id/subscription', verifyAdmin, companyController.updateSubscription);
 router.post('/companies/:id/password', verifyAdmin, companyController.changeAdminPassword);
-router.post('/companies/:id/branding', verifyAdmin, upload.array('files', 1), companyController.updateBranding);
 router.post('/companies/:id/branding', verifyAdmin, upload.array('files', 1), companyController.updateBranding);
 router.patch('/companies/:id/branding', verifyAdmin, companyController.updateBrandingUrl);
 

@@ -10,38 +10,81 @@ exports.processMessage = async (companyId, platform, platformId, userProfile, te
                 const fs = require('fs');
                 const path = require('path');
                 const axios = require('axios');
-                const ext = type === 'image' ? '.jpg' : '.ogg';
-                const filename = `persist_${platform}_${platformId}_${Date.now()}${ext}`;
-                const localPath = path.join(__dirname, '../../uploads', filename);
-                
-                const response = await axios({ url: mediaUrl, method: 'GET', responseType: 'stream' });
-                const writer = fs.createWriteStream(localPath);
-                response.data.pipe(writer);
-                
-                await new Promise((resolve, reject) => {
-                    writer.on('finish', resolve);
-                    writer.on('error', reject);
-                });
 
-                // Optimization after download
-                if (type === 'image') {
-                    try {
-                        const sharp = require('sharp');
-                        const tempPath = localPath + '_opt';
-                        await sharp(localPath)
-                            .resize({ width: 1200, withoutEnlargement: true })
-                            .jpeg({ quality: 80 })
-                            .toFile(tempPath);
-                        
-                        fs.unlinkSync(localPath);
-                        fs.renameSync(tempPath, localPath);
-                        console.log(`[BotLogic] Optimized user image: ${filename}`);
-                    } catch (optErr) {
-                        console.error("[BotLogic] Optimization Error:", optErr.message);
+                // --- SECURITY: Validate file BEFORE downloading ---
+                const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10MB
+                const ALLOWED_MIMES = {
+                    image: ['image/jpeg', 'image/png', 'image/gif', 'image/webp'],
+                    audio: ['audio/ogg', 'audio/mpeg', 'audio/mp4', 'audio/wav', 'audio/x-m4a', 'application/octet-stream']
+                };
+
+                let skipDownload = false;
+                try {
+                    const headRes = await axios.head(mediaUrl, { timeout: 5000 });
+                    const contentLength = parseInt(headRes.headers['content-length'] || '0');
+                    const contentType = (headRes.headers['content-type'] || '').split(';')[0].trim();
+
+                    if (contentLength > MAX_FILE_SIZE) {
+                        console.warn(`[BotLogic] REJECTED: File too large (${(contentLength / 1024 / 1024).toFixed(1)}MB > 10MB)`);
+                        skipDownload = true;
+                    }
+                    if (contentType && !ALLOWED_MIMES[type]?.includes(contentType)) {
+                        console.warn(`[BotLogic] REJECTED: Invalid MIME ${contentType} for type ${type}`);
+                        skipDownload = true;
+                    }
+                } catch (headErr) {
+                    // HEAD might fail on some CDNs, proceed with download cautiously
+                    console.warn(`[BotLogic] HEAD check failed, proceeding: ${headErr.message}`);
+                }
+                // --- END SECURITY CHECK ---
+
+                if (!skipDownload) {
+                    const ext = type === 'image' ? '.jpg' : '.ogg';
+                    const filename = `persist_${platform}_${platformId}_${Date.now()}${ext}`;
+                    const localPath = path.join(__dirname, '../../uploads', filename);
+                    
+                    const response = await axios({ url: mediaUrl, method: 'GET', responseType: 'stream', timeout: 30000 });
+                    const writer = fs.createWriteStream(localPath);
+                    
+                    // Stream size guard
+                    let bytesReceived = 0;
+                    response.data.on('data', (chunk) => {
+                        bytesReceived += chunk.length;
+                        if (bytesReceived > MAX_FILE_SIZE) {
+                            response.data.destroy();
+                            writer.destroy();
+                            try { fs.unlinkSync(localPath); } catch(e) {}
+                            console.warn(`[BotLogic] Download aborted: exceeded 10MB during stream`);
+                        }
+                    });
+                    response.data.pipe(writer);
+                    
+                    await new Promise((resolve, reject) => {
+                        writer.on('finish', resolve);
+                        writer.on('error', reject);
+                    });
+
+                    // Optimization after download
+                    if (type === 'image' && bytesReceived <= MAX_FILE_SIZE) {
+                        try {
+                            const sharp = require('sharp');
+                            const tempPath = localPath + '_opt';
+                            await sharp(localPath)
+                                .resize({ width: 1200, withoutEnlargement: true })
+                                .jpeg({ quality: 80 })
+                                .toFile(tempPath);
+                            
+                            fs.unlinkSync(localPath);
+                            fs.renameSync(tempPath, localPath);
+                        } catch (optErr) {
+                            console.error("[BotLogic] Optimization Error:", optErr.message);
+                        }
+                    }
+
+                    if (bytesReceived <= MAX_FILE_SIZE) {
+                        mediaUrl = `uploads/${filename}`;
                     }
                 }
-
-                mediaUrl = `uploads/${filename}`;
             } catch (err) {
                 console.error("[Persistence Error] Failed to download user media:", err.message);
             }

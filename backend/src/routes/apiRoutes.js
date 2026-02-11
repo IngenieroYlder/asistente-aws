@@ -77,4 +77,31 @@ router.post('/plans', verifyAdmin, planController.createPlan); // Superadmin che
 router.put('/plans/:id', verifyAdmin, planController.updatePlan);
 router.delete('/plans/:id', verifyAdmin, planController.deletePlan);
 
+// Baileys WhatsApp (Testing Mode)
+const baileysService = require('../services/baileysService');
+
+router.post('/baileys/start', verifyAdmin, async (req, res) => {
+    try {
+        const companyId = req.companyId || null;
+        await baileysService.startBaileys(companyId);
+        res.json({ success: true, message: 'Baileys connecting... Scan QR code.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.post('/baileys/stop', verifyAdmin, async (req, res) => {
+    try {
+        const companyId = req.companyId || null;
+        await baileysService.stopBaileys(companyId);
+        res.json({ success: true, message: 'Baileys disconnected.' });
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+router.get('/baileys/status', verifyAdmin, async (req, res) => {
+    try {
+        const companyId = req.companyId || null;
+        const status = baileysService.getStatus(companyId);
+        res.json(status);
+    } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 module.exports = router;

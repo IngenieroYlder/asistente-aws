@@ -8,7 +8,15 @@ const webhookRoutes = require('./routes/webhookRoutes');
 // const { setupTelegramBot } = require('./services/telegramService'); -> Deprecated for SaaS
 
 const app = express();
+const http = require('http');
+const { Server } = require('socket.io');
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 5000;
+
+// Pass Socket.IO to Baileys service
+const baileysService = require('./services/baileysService');
+baileysService.setIO(io);
 
 // Ensure uploads directory exists
 const fs = require('fs');
@@ -57,7 +65,7 @@ async function startServer() {
     const botManager = require('./services/botManager');
     await botManager.loadAllBots();
 
-    app.listen(PORT, () => {
+    server.listen(PORT, () => {
       console.log(`🚀 Server running on port ${PORT}`);
     });
   } catch (error) {

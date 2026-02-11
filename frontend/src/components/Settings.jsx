@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useRef } from 'react';
 import api, { BASE_URL } from '../utils/api';
 import { Save, Image as ImageIcon, Copy, Plus, X, Upload, Download, History, RefreshCcw, Smartphone, MessageCircle, Send, Trash2, Eye, Edit2 } from 'lucide-react';
+import BaileysModal from './BaileysModal';
 
 export const Settings = ({ company }) => {
     const [settings, setSettings] = useState([]);
@@ -16,6 +17,7 @@ export const Settings = ({ company }) => {
     const [activePromptKey, setActivePromptKey] = useState('SYSTEM_PROMPT'); // Toggle between platforms
     const [previewAsset, setPreviewAsset] = useState(null); // Asset for content preview
     const [webhookUrl, setWebhookUrl] = useState('');
+    const [showBaileysModal, setShowBaileysModal] = useState(false);
 
     useEffect(() => {
         const savedUrl = settings.find(s => s.key === 'META_WEBHOOK_URL')?.value;
@@ -532,8 +534,28 @@ export const Settings = ({ company }) => {
                     {renderIntegrationField('Phone Number ID', 'WHATSAPP_PHONE_ID', 'Ej: 10595... (ID del Número de Teléfono)')}
                     {renderIntegrationField('WABA ID', 'WHATSAPP_BUSINESS_ACCOUNT_ID', 'Ej: 10080... (ID de Cuenta de WhatsApp Business)')}
 
+                    {/* Baileys Quick Test */}
+                    <div className="col-span-full bg-gradient-to-r from-green-50 to-emerald-50 rounded-2xl p-5 border-2 border-dashed border-green-300 mt-2">
+                        <div className="flex items-center justify-between">
+                            <div className="flex items-center gap-3">
+                                <span className="text-2xl">🧪</span>
+                                <div>
+                                    <h5 className="font-bold text-gray-700 text-sm">Modo Prueba Rápida (Baileys)</h5>
+                                    <p className="text-xs text-gray-500">Conecta vía QR sin API oficial. Solo para pruebas.</p>
+                                </div>
+                            </div>
+                            <button
+                                onClick={() => setShowBaileysModal(true)}
+                                className="px-5 py-2.5 bg-green-600 text-white rounded-xl font-bold text-xs hover:bg-green-700 transition-all shadow-lg hover:shadow-xl flex items-center gap-2"
+                            >
+                                <Smartphone size={14} /> Probar WhatsApp
+                            </button>
+                        </div>
+                    </div>
+
                     <div className="col-span-full border-b pb-2 mb-2 mt-4"></div>
                     {renderIntegrationField('Comandos de Prueba', 'ENABLE_TEST_COMMANDS', 'true / false')}
+                    {renderIntegrationField('Buffer entre Mensajes (seg)', 'MESSAGE_BUFFER_SECONDS', 'Ej: 8 (espera entre mensajes rápidos)')}
                 </div>
 
                 {/* Security Settings - SuperAdmin Only */}
@@ -925,6 +947,12 @@ export const Settings = ({ company }) => {
                     </div>
                 </div>
             )}
+
+            <BaileysModal 
+                isOpen={showBaileysModal} 
+                onClose={() => setShowBaileysModal(false)} 
+                companyId={company?.id || null}
+            />
         </div>
     );
 };

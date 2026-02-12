@@ -23,7 +23,7 @@ const botLogic = require('./botLogic');
 const openaiService = require('./openaiService');
 const { bufferMessage } = require('./messageBuffer');
 
-// Map<companyKey, { sock, status, qr, retries }>
+// Map<companyKey, { sock, status, qr, retries, companyId }>
 const connections = new Map();
 const AUTH_DIR = path.join(__dirname, '../../uploads/baileys_auth');
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
@@ -72,7 +72,6 @@ async function downloadBaileysMedia(msg, type, companyId, senderId) {
         const buffer = await downloadMediaMessage(msg, 'buffer', {});
         if (!buffer || buffer.length === 0) return null;
 
-        // Limit: 25MB
         if (buffer.length > 25 * 1024 * 1024) {
             console.warn(`[Baileys] Media too large: ${(buffer.length / 1024 / 1024).toFixed(1)}MB`);
             return null;
@@ -91,13 +90,26 @@ async function downloadBaileysMedia(msg, type, companyId, senderId) {
 }
 
 /**
+ * Gracefully close an existing socket WITHOUT deleting auth state.
+ * Used internally before reconnection so the QR pairing isn't interrupted.
+ */
+function closeSocket(key) {
+    const conn = connections.get(key);
+    if (conn && conn.sock) {
+        try { conn.sock.ev.removeAllListeners(); } catch (e) {}
+        try { conn.sock.end(undefined); } catch (e) {}
+        connections.delete(key);
+    }
+}
+
+/**
  * Start a Baileys WhatsApp connection for a company
  */
 async function startBaileys(companyId) {
     const key = getKey(companyId);
 
-    // Stop existing connection if any
-    await stopBaileys(companyId);
+    // Close existing socket gently (keep auth state for QR re-pairing)
+    closeSocket(key);
 
     // Ensure auth directory exists
     const authPath = path.join(AUTH_DIR, key);
@@ -117,6 +129,9 @@ async function startBaileys(companyId) {
         browser: ['Asistente AWS', 'Chrome', '120.0'],
         generateHighQualityLinkPreview: false,
         syncFullHistory: false,
+        // Give more time for QR pairing to complete
+        connectTimeoutMs: 60000,
+        qrTimeout: 40000,
     });
 
     const conn = {
@@ -154,20 +169,23 @@ async function startBaileys(companyId) {
 
             conn.status = 'disconnected';
             conn.qr = null;
-            emitStatus(key, { status: 'disconnected', reason: statusCode });
 
-            if (shouldReconnect && conn.retries < 5) {
-                conn.retries++;
-                const delay = Math.min(1000 * Math.pow(2, conn.retries), 30000);
-                console.log(`[Baileys] Reconnecting ${key} in ${delay / 1000}s (attempt ${conn.retries})...`);
-                setTimeout(() => startBaileys(companyId), delay);
-            } else if (statusCode === DisconnectReason.loggedOut) {
+            if (statusCode === DisconnectReason.loggedOut) {
+                // User logged out - clear auth and stop
                 console.log(`[Baileys] Logged out for ${key}. Clearing auth.`);
                 if (fs.existsSync(authPath)) {
                     fs.rmSync(authPath, { recursive: true, force: true });
                 }
                 connections.delete(key);
                 emitStatus(key, { status: 'logged_out' });
+            } else if (shouldReconnect && conn.retries < 5) {
+                conn.retries++;
+                const delay = Math.min(2000 * conn.retries, 15000);
+                console.log(`[Baileys] Reconnecting ${key} in ${delay / 1000}s (attempt ${conn.retries})...`);
+                emitStatus(key, { status: 'reconnecting', attempt: conn.retries });
+                setTimeout(() => startBaileys(companyId), delay);
+            } else {
+                emitStatus(key, { status: 'disconnected', reason: statusCode });
             }
         }
 
@@ -209,7 +227,6 @@ async function startBaileys(companyId) {
             } else if (msg.message.extendedTextMessage) {
                 text = msg.message.extendedTextMessage.text || '';
             } else if (msg.message.imageMessage) {
-                // Download image
                 const localPath = await downloadBaileysMedia(msg, 'image', companyId, senderId);
                 if (localPath) {
                     text = msg.message.imageMessage.caption || '';
@@ -220,21 +237,16 @@ async function startBaileys(companyId) {
                 }
             } else if (msg.message.audioMessage) {
                 msgType = 'audio';
-                // Download audio and transcribe
                 const localPath = await downloadBaileysMedia(msg, 'audio', companyId, senderId);
                 if (localPath) {
-                    // Show typing while transcribing
                     await sendTyping(sock, senderId);
-
                     try {
                         const transcription = await openaiService.transcribeAudio(localPath, companyId);
-                        fs.unlinkSync(localPath); // Clean up temp file
-
+                        fs.unlinkSync(localPath);
                         if (transcription) {
                             text = transcription;
                             console.log(`[Baileys] Transcribed audio: "${text.substring(0, 60)}..."`);
                         } else {
-                            text = '';
                             await sock.sendMessage(senderId, { text: '👂 No pude entender el audio.' });
                             await stopTyping(sock, senderId);
                             continue;
@@ -270,7 +282,6 @@ async function startBaileys(companyId) {
 
             console.log(`[Baileys] Message from ${senderId}: "${text.substring(0, 50)}"`);
 
-            // Audio goes direct (already transcribed), text/image go through buffer
             if (msgType === 'audio') {
                 await sendTyping(sock, senderId);
                 const response = await botLogic.processMessage(companyId, 'whatsapp', senderId, profile, text, msgType, mediaUrl);
@@ -316,27 +327,30 @@ async function sendBotPhotos(sock, jid, response) {
 }
 
 /**
- * Stop a Baileys connection
+ * Stop a Baileys connection (user-initiated disconnect)
+ * This clears auth state so a fresh QR is required next time.
  */
 async function stopBaileys(companyId) {
     const key = getKey(companyId);
     const conn = connections.get(key);
     if (conn && conn.sock) {
+        try { conn.sock.ev.removeAllListeners(); } catch (e) {}
         try {
             await conn.sock.logout();
         } catch (e) {}
         try {
-            conn.sock.end();
+            conn.sock.end(undefined);
         } catch (e) {}
         connections.delete(key);
         
+        // Clear auth state only on explicit stop
         const authPath = path.join(AUTH_DIR, key);
         if (fs.existsSync(authPath)) {
             fs.rmSync(authPath, { recursive: true, force: true });
         }
         
         emitStatus(key, { status: 'disconnected' });
-        console.log(`[Baileys] Stopped for ${key}`);
+        console.log(`[Baileys] Stopped and auth cleared for ${key}`);
     }
 }
 

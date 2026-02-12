@@ -6,6 +6,7 @@ import { X, Wifi, WifiOff, Smartphone, AlertTriangle, Shield, CheckCircle } from
 const STATUS_MAP = {
     disconnected: { label: 'Desconectado', color: '#EF4444', icon: WifiOff },
     connecting: { label: 'Conectando...', color: '#F59E0B', icon: Wifi },
+    reconnecting: { label: 'Reconectando...', color: '#F59E0B', icon: Wifi },
     qr: { label: 'Escanea el QR', color: '#3B82F6', icon: Smartphone },
     connected: { label: 'Conectado', color: '#10B981', icon: CheckCircle },
     logged_out: { label: 'Sesión Cerrada', color: '#6B7280', icon: WifiOff }
@@ -214,11 +215,13 @@ export default function BaileysModal({ isOpen, onClose, companyId }) {
                         </div>
                     )}
 
-                    {/* Connecting State */}
-                    {status === 'connecting' && !qr && (
+                    {/* Connecting / Reconnecting State */}
+                    {(status === 'connecting' || status === 'reconnecting') && !qr && (
                         <div className="text-center py-8">
                             <div className="w-16 h-16 border-4 border-green-200 border-t-green-600 rounded-full animate-spin mx-auto mb-4"></div>
-                            <p className="text-sm text-gray-500">Preparando conexión...</p>
+                            <p className="text-sm text-gray-500">
+                                {status === 'reconnecting' ? 'Reconectando, espera...' : 'Preparando conexión...'}
+                            </p>
                         </div>
                     )}
 

@@ -20,7 +20,9 @@ export default function BaileysModal({ isOpen, onClose, companyId }) {
     const [accepted, setAccepted] = useState(false);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState(null);
+    const [qrTimer, setQrTimer] = useState(0);
     const socketRef = useRef(null);
+    const timerRef = useRef(null);
 
     const companyKey = companyId ? `company_${companyId}` : 'global';
 
@@ -34,8 +36,25 @@ export default function BaileysModal({ isOpen, onClose, companyId }) {
 
         socket.on(`baileys:${companyKey}`, (data) => {
             setStatus(data.status);
-            if (data.qr) setQR(data.qr);
-            else setQR(null);
+            if (data.qr) {
+                setQR(data.qr);
+                // Reset countdown on new QR (Baileys QR cycles every ~20s)
+                setQrTimer(20);
+                if (timerRef.current) clearInterval(timerRef.current);
+                timerRef.current = setInterval(() => {
+                    setQrTimer(prev => {
+                        if (prev <= 1) {
+                            clearInterval(timerRef.current);
+                            return 0;
+                        }
+                        return prev - 1;
+                    });
+                }, 1000);
+            } else {
+                setQR(null);
+                setQrTimer(0);
+                if (timerRef.current) clearInterval(timerRef.current);
+            }
             if (data.phone) setPhone(data.phone);
             if (data.name) setName(data.name);
         });
@@ -46,6 +65,7 @@ export default function BaileysModal({ isOpen, onClose, companyId }) {
         return () => {
             socket.disconnect();
             socketRef.current = null;
+            if (timerRef.current) clearInterval(timerRef.current);
         };
     }, [isOpen, companyKey]);
 
@@ -206,11 +226,33 @@ export default function BaileysModal({ isOpen, onClose, companyId }) {
                             <p className="text-sm text-gray-500 mb-4">
                                 📱 Abre <strong>WhatsApp</strong> → Menú (⋮) → <strong>Dispositivos Vinculados</strong> → <strong>Vincular Dispositivo</strong>
                             </p>
-                            <div className="inline-block p-4 bg-white rounded-2xl shadow-lg border-2 border-green-200">
-                                <img src={qr} alt="QR Code" className="w-64 h-64" />
+                            <div className="relative inline-block">
+                                <div className="p-4 bg-white rounded-2xl shadow-lg border-2 border-green-200">
+                                    <img src={qr} alt="QR Code" className="w-64 h-64" />
+                                </div>
+                                {/* Countdown ring */}
+                                <div className="absolute -top-3 -right-3 w-12 h-12 bg-white rounded-full shadow-lg flex items-center justify-center border-2 border-gray-100">
+                                    <svg className="w-10 h-10 -rotate-90" viewBox="0 0 36 36">
+                                        <circle cx="18" cy="18" r="15" fill="none" stroke="#e5e7eb" strokeWidth="3" />
+                                        <circle
+                                            cx="18" cy="18" r="15" fill="none"
+                                            stroke={qrTimer > 5 ? '#10B981' : '#EF4444'}
+                                            strokeWidth="3"
+                                            strokeDasharray={`${(qrTimer / 20) * 94.25} 94.25`}
+                                            strokeLinecap="round"
+                                            style={{ transition: 'stroke-dasharray 1s linear, stroke 0.3s' }}
+                                        />
+                                    </svg>
+                                    <span className={`absolute text-xs font-bold ${qrTimer > 5 ? 'text-green-600' : 'text-red-500'}`}>
+                                        {qrTimer}s
+                                    </span>
+                                </div>
                             </div>
-                            <p className="text-xs text-gray-400 mt-3 animate-pulse">
-                                El QR se actualiza automáticamente...
+                            <p className="text-xs text-gray-400 mt-3">
+                                ⏳ Nuevo QR en <strong className={qrTimer > 5 ? 'text-green-600' : 'text-red-500'}>{qrTimer}s</strong> — Escanea rápido, no esperes a que cambie.
+                            </p>
+                            <p className="text-[10px] text-gray-300 mt-1">
+                                Tip: Si el teléfono dice "Iniciando sesión" pero no conecta, espera al siguiente QR e intenta de nuevo.
                             </p>
                         </div>
                     )}
